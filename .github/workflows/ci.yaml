@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
 
+# Cancel in-progress runs for the same branch/PR when a new commit is pushed
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -26,7 +27,7 @@ jobs:
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "Bitte gofmt ausführen für:"
+            echo "The following files are not gofmt-formatted:"
             echo "$unformatted"
             exit 1
           fi
@@ -34,7 +35,12 @@ jobs:
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum
+          if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+            echo "go.mod/go.sum are not tidy - run 'go mod tidy' and commit the result."
+            git status --short -- go.mod go.sum
+            git diff -- go.mod go.sum
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
