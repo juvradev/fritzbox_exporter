@@ -1,9 +1,12 @@
 /fritzbox_exporter
+/friz-spike/
 /dist/
+
 *.exe
 .env
 *.local
 config.yaml
+
 .idea/
 .vscode/
 .DS_Store
