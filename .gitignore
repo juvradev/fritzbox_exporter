@@ -1,0 +1,9 @@
+/fritzbox_exporter
+/dist/
+*.exe
+.env
+*.local
+config.yaml
+.idea/
+.vscode/
+.DS_Store
