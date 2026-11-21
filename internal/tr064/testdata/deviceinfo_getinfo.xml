@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+<s:Body>
+<u:GetInfoResponse xmlns:u="urn:dslforum-org:service:DeviceInfo:1">
+<NewManufacturerName>AVM</NewManufacturerName>
+<NewManufacturerOUI>00040E</NewManufacturerOUI>
+<NewModelName>FRITZ!Box 6660 Cable</NewModelName>
+<NewDescription>FRITZ!Box 6660 Cable Release 252.08.25</NewDescription>
+<NewProductClass>FRITZ!Box</NewProductClass>
+<NewSerialNumber>000000000000</NewSerialNumber>
+<NewSoftwareVersion>252.08.25</NewSoftwareVersion>
+<NewHardwareVersion>FRITZ!Box 6660 Cable</NewHardwareVersion>
+<NewSpecVersion>1.0</NewSpecVersion>
+<NewProvisioningCode></NewProvisioningCode>
+<NewUpTime>2518554</NewUpTime>
+<NewDeviceLog>sanitized</NewDeviceLog>
+</u:GetInfoResponse>
+</s:Body>
+</s:Envelope>
