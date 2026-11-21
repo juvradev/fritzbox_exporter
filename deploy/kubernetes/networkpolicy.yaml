@@ -1,0 +1,36 @@
+# Example NetworkPolicy: only Prometheus may scrape the exporter.
+#
+# /metrics exposes details about the home network (SSID, firmware, model),
+# and every request queries the FRITZ!Box. This policy allows ingress on the
+# metrics port only from Prometheus pods in the "monitoring" namespace.
+# Egress stays unrestricted, so the exporter can still reach the box.
+#
+# Adjust namespace and labels to your setup. The labels below match the
+# Prometheus pods created by kube-prometheus-stack.
+#
+# k3s enforces NetworkPolicies with its embedded network policy controller.
+# If the liveness/readiness probes start failing after applying this policy,
+# additionally allow the node addresses via an ipBlock rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fritzbox-exporter
+  namespace: fritzbox-exporter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fritzbox-exporter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Both selectors in one entry: Prometheus pods AND in "monitoring".
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9133

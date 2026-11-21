@@ -1,7 +1,7 @@
 package tr064
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is mandated by HTTP digest auth (RFC 2617).
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,13 +9,27 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
+// maxReuseRejections is how often in a row a reused nonce may be rejected
+// before nonce reuse is switched off. Some servers accept every nonce only
+// once; for them every reuse attempt is a rejected login, which the box may
+// count as a failed attempt and answer with a login block.
+const maxReuseRejections = 3
+
+// DigestTransport is an http.RoundTripper that adds HTTP digest
 // authentication (RFC 2617, algorithm MD5, qop=auth) to requests.
 //
-// Every request is first sent without credentials. If the server answers
-// with 401 and a digest challenge, the request is sent once more with a
-// matching Authorization header.
+// The first request is sent without credentials. The server answers with
+// 401 and a digest challenge, and the request is sent again with a matching
+// Authorization header. The challenge is then cached: later requests reuse
+// its nonce with an increasing nonce count (nc) and are authenticated right
+// away, which saves one round trip per request. If the server rejects a
+// reused nonce, the transport answers the new challenge; after
+// maxReuseRejections rejections in a row it stops reusing nonces.
+//
+// A DigestTransport must not be copied after first use.
 type DigestTransport struct {
 	Username string
 	Password string
@@ -27,10 +41,12 @@ type DigestTransport struct {
 	// newCnonce creates the client nonce. Tests replace it to get
 	// deterministic headers; nil means crypto/rand.
 	newCnonce func() string
-}
 
-// nonceCount is always 1 because every challenge is used exactly once.
-const nonceCount = "00000001"
+	mu         sync.Mutex // guards the fields below
+	cached     *challenge // last challenge, reused for later requests
+	nc         uint32     // nonce count for cached
+	rejections int        // reused nonces rejected in a row
+}
 
 // RoundTrip implements http.RoundTripper.
 func (t *DigestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -39,16 +55,37 @@ func (t *DigestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		next = http.DefaultTransport
 	}
 
-	// The first attempt consumes the body, so the retry needs a fresh copy.
+	// A request may be sent twice, so its body must be replayable.
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		return nil, errors.New("digest auth: request body cannot be replayed (GetBody is nil)")
 	}
 
-	resp, err := next.RoundTrip(req)
+	uri := req.URL.RequestURI()
+
+	// Fast path: authenticate right away with the cached challenge.
+	if auth, ok := t.reuseAuthorization(req.Method, uri); ok {
+		resp, err := t.send(next, req, auth, true)
+		if err != nil || resp.StatusCode != http.StatusUnauthorized {
+			if err == nil {
+				t.reuseAccepted()
+			}
+			return resp, err
+		}
+		// Nonce expired, single-use or wrong password: answer the new challenge.
+		t.reuseRejected()
+		return t.answerChallenge(next, req, resp)
+	}
+
+	resp, err := t.send(next, req, "", true)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
+	return t.answerChallenge(next, req, resp)
+}
 
+// answerChallenge reads the challenge from a 401 response, caches it and
+// sends the request again with credentials.
+func (t *DigestTransport) answerChallenge(next http.RoundTripper, req *http.Request, resp *http.Response) (*http.Response, error) {
 	header := resp.Header.Get("WWW-Authenticate")
 	// Drain and close the 401 response so the connection can be reused.
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -59,41 +96,99 @@ func (t *DigestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	retry := req.Clone(req.Context())
-	if req.GetBody != nil {
+	auth := t.newChallenge(ch, req.Method, req.URL.RequestURI())
+	return t.send(next, req, auth, false)
+}
+
+// send sends req with the given Authorization header (none if empty).
+// first is true for the first attempt, which may still use req's body;
+// later attempts need a fresh body from GetBody.
+func (t *DigestTransport) send(next http.RoundTripper, req *http.Request, auth string, first bool) (*http.Response, error) {
+	out := req
+	if auth != "" || !first {
+		// A RoundTripper must not modify the caller's request.
+		out = req.Clone(req.Context())
+	}
+	if !first && req.GetBody != nil {
 		body, err := req.GetBody()
 		if err != nil {
 			return nil, fmt.Errorf("digest auth: replay request body: %w", err)
 		}
-		retry.Body = body
+		out.Body = body
 	}
-	retry.Header.Set("Authorization", t.authorization(ch, req.Method, req.URL.RequestURI()))
+	if auth != "" {
+		out.Header.Set("Authorization", auth)
+	}
+	return next.RoundTrip(out)
+}
 
-	return next.RoundTrip(retry)
+// reuseAuthorization returns an Authorization header for the cached
+// challenge with the next nonce count, if reuse is possible.
+func (t *DigestTransport) reuseAuthorization(method, uri string) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.cached == nil || t.rejections >= maxReuseRejections {
+		return "", false
+	}
+	t.nc++
+	return t.authorization(*t.cached, t.nc, method, uri), true
+}
+
+// newChallenge caches ch and returns the Authorization header for its first use.
+func (t *DigestTransport) newChallenge(ch challenge, method, uri string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.cached = &ch
+	t.nc = 1
+	return t.authorization(ch, t.nc, method, uri)
+}
+
+func (t *DigestTransport) reuseAccepted() {
+	t.mu.Lock()
+	t.rejections = 0
+	t.mu.Unlock()
+}
+
+func (t *DigestTransport) reuseRejected() {
+	t.mu.Lock()
+	t.rejections++
+	t.mu.Unlock()
 }
 
 // authorization builds the value of the Authorization header.
-func (t *DigestTransport) authorization(ch challenge, method, uri string) string {
+func (t *DigestTransport) authorization(ch challenge, nc uint32, method, uri string) string {
 	qop := ""
 	if ch.qop != "" {
 		qop = "auth"
 	}
+	ncHex := fmt.Sprintf("%08x", nc)
 	cnonce := t.cnonce()
-	response := digestResponse(t.Username, t.Password, ch.realm, method, uri, ch.nonce, nonceCount, cnonce, qop)
+	response := digestResponse(t.Username, t.Password, ch.realm, method, uri, ch.nonce, ncHex, cnonce, qop)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, `Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s"`,
-		t.Username, ch.realm, ch.nonce, uri, response)
+	fmt.Fprintf(&b, `Digest username=%s, realm=%s, nonce=%s, uri=%s, response=%s`,
+		quote(t.Username), quote(ch.realm), quote(ch.nonce), quote(uri), quote(response))
 	if ch.algorithm != "" {
 		fmt.Fprintf(&b, `, algorithm=%s`, ch.algorithm)
 	}
 	if qop != "" {
-		fmt.Fprintf(&b, `, qop=%s, nc=%s, cnonce="%s"`, qop, nonceCount, cnonce)
+		fmt.Fprintf(&b, `, qop=%s, nc=%s, cnonce=%s`, qop, ncHex, quote(cnonce))
 	}
 	if ch.opaque != "" {
-		fmt.Fprintf(&b, `, opaque="%s"`, ch.opaque)
+		fmt.Fprintf(&b, `, opaque=%s`, quote(ch.opaque))
 	}
 	return b.String()
+}
+
+// quoteEscaper escapes the characters that would end a quoted-string early.
+var quoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// quote returns s as an HTTP quoted-string (RFC 7230), so a username or a
+// server value containing `"` cannot break the header.
+func quote(s string) string {
+	return `"` + quoteEscaper.Replace(s) + `"`
 }
 
 func (t *DigestTransport) cnonce() string {
@@ -115,7 +210,7 @@ func digestResponse(username, password, realm, method, uri, nonce, nc, cnonce, q
 }
 
 func md5Hex(s string) string {
-	sum := md5.Sum([]byte(s)) //nolint:gosec // see import comment
+	sum := md5.Sum([]byte(s)) //nolint:gosec // MD5 is mandated by RFC 2617
 	return hex.EncodeToString(sum[:])
 }
 

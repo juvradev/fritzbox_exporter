@@ -48,7 +48,7 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadCustomValues(t *testing.T) {
 	cfg, err := load(env(map[string]string{
-		EnvFritzBoxURL:      "https://192.168.178.1:49443/",
+		EnvFritzBoxURL:      "http://192.168.178.1:49000/",
 		EnvFritzBoxUsername: " prometheus ",
 		EnvFritzBoxPassword: " pass with spaces ",
 		EnvCollectors:       "WAN, docsis",
@@ -60,11 +60,11 @@ func TestLoadCustomValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.FritzBoxURL != "https://192.168.178.1:49443" {
+	if cfg.FritzBoxURL != "http://192.168.178.1:49000" {
 		t.Errorf("FritzBoxURL = %q (trailing slash should be removed)", cfg.FritzBoxURL)
 	}
-	if cfg.WebUIURL != "https://192.168.178.1" {
-		t.Errorf("WebUIURL = %q, want https://192.168.178.1 (port dropped)", cfg.WebUIURL)
+	if cfg.WebUIURL != "http://192.168.178.1" {
+		t.Errorf("WebUIURL = %q, want http://192.168.178.1 (port dropped)", cfg.WebUIURL)
 	}
 	if cfg.Username != "prometheus" {
 		t.Errorf("Username = %q (should be trimmed)", cfg.Username)
@@ -100,7 +100,9 @@ func TestLoadErrors(t *testing.T) {
 	}{
 		{"missing username", EnvFritzBoxUsername, "", "FRITZBOX_USERNAME is required"},
 		{"missing password", EnvFritzBoxPassword, "", "FRITZBOX_PASSWORD is required"},
-		{"bad url scheme", EnvFritzBoxURL, "ftp://fritz.box", "scheme must be http or https"},
+		{"bad url scheme", EnvFritzBoxURL, "ftp://fritz.box", "scheme must be http"},
+		{"https not supported", EnvFritzBoxURL, "https://fritz.box:49443", "https is not supported"},
+		{"https web ui not supported", EnvWebUIURL, "https://fritz.box", "FRITZBOX_WEBUI_URL"},
 		{"url without host", EnvFritzBoxURL, "http://", "missing host"},
 		{"bad log level", EnvLogLevel, "loud", "LOG_LEVEL"},
 		{"bad timeout", EnvScrapeTimeout, "ten", "SCRAPE_TIMEOUT"},
@@ -150,5 +152,23 @@ func TestLogValueRedactsPassword(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "[REDACTED]") {
 		t.Errorf("expected redaction marker in: %s", buf.String())
+	}
+}
+
+func TestWebUIFromTR064(t *testing.T) {
+	tests := map[string]string{
+		"http://192.168.178.1:49000": "http://192.168.178.1",
+		"http://fritz.box:49000":     "http://fritz.box",
+		"http://fritz.box":           "http://fritz.box",
+		"http://[fd00::1]:49000":     "http://[fd00::1]", // IPv6 keeps its brackets
+	}
+	for in, want := range tests {
+		got := webUIFromTR064(in)
+		if got != want {
+			t.Errorf("webUIFromTR064(%q) = %q, want %q", in, got, want)
+		}
+		if err := validateURL(got); err != nil {
+			t.Errorf("derived URL %q is invalid: %v", got, err)
+		}
 	}
 }

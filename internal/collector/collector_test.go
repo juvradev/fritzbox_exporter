@@ -1,11 +1,13 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,11 +21,19 @@ import (
 type fakeCaller struct {
 	responses map[string]map[string]string // key: "<service type>#<action>"
 	errs      map[string]error
+	errAll    error         // if set, every call fails with it
+	calls     *atomic.Int32 // optional call counter
 }
 
 func key(svc tr064.Service, action string) string { return svc.Type + "#" + action }
 
 func (f fakeCaller) Call(_ context.Context, svc tr064.Service, action string, _ map[string]string) (map[string]string, error) {
+	if f.calls != nil {
+		f.calls.Add(1)
+	}
+	if f.errAll != nil {
+		return nil, f.errAll
+	}
 	k := key(svc, action)
 	if err := f.errs[k]; err != nil {
 		return nil, err
@@ -246,4 +256,125 @@ func TestBandLabel(t *testing.T) {
 			t.Errorf("bandLabel(%q) = %q, want %q", raw, got, want)
 		}
 	}
+}
+
+func TestWANPartialResults(t *testing.T) {
+	// The first WAN call fails, the other parts must still be collected.
+	e := newExporter(fakeCaller{
+		responses: spikeResponses(),
+		errs: map[string]error{
+			key(tr064.WANCommonInterfaceConfig, "GetCommonLinkProperties"): errors.New("boom"),
+		},
+	})
+
+	for _, name := range []string{
+		"fritzbox_wan_bytes_received_total",
+		"fritzbox_wan_bytes_sent_total",
+		"fritzbox_wan_connected",
+		"fritzbox_wan_connection_uptime_seconds",
+	} {
+		if n := testutil.CollectAndCount(e, name); n != 1 {
+			t.Errorf("%s count = %d, want 1", name, n)
+		}
+	}
+	if n := testutil.CollectAndCount(e, "fritzbox_wan_info"); n != 0 {
+		t.Errorf("fritzbox_wan_info count = %d, want 0 (its call failed)", n)
+	}
+}
+
+func TestWLANPartialResults(t *testing.T) {
+	// Interface 1 fails, interfaces 2 and 3 must still be collected.
+	e := newExporter(fakeCaller{
+		responses: spikeResponses(),
+		errs: map[string]error{
+			key(tr064.WLANConfiguration(1), "GetInfo"): errors.New("boom"),
+		},
+	})
+
+	want := `
+# HELP fritzbox_wlan_associations Number of clients connected to the WLAN interface.
+# TYPE fritzbox_wlan_associations gauge
+fritzbox_wlan_associations{band="5GHz",index="2"} 7
+fritzbox_wlan_associations{band="unknown",index="3"} 0
+# HELP fritzbox_scrape_collector_success Whether the collector succeeded during the last scrape.
+# TYPE fritzbox_scrape_collector_success gauge
+fritzbox_scrape_collector_success{collector="device"} 1
+fritzbox_scrape_collector_success{collector="wan"} 1
+fritzbox_scrape_collector_success{collector="wlan"} 0
+`
+	if err := testutil.CollectAndCompare(e, strings.NewReader(want),
+		"fritzbox_wlan_associations", "fritzbox_scrape_collector_success"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAuthErrorPausesCollector(t *testing.T) {
+	var calls atomic.Int32
+	caller := fakeCaller{errAll: fmt.Errorf("tr064 GetInfo: %w", tr064.ErrUnauthorized), calls: &calls}
+	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, slog.New(slog.DiscardHandler))
+
+	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
+	e.now = func() time.Time { return now }
+
+	testutil.CollectAndCount(e) // fails with ErrUnauthorized -> pause
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls after first scrape = %d, want 1", got)
+	}
+
+	now = now.Add(DefaultAuthBackoff - time.Second)
+	testutil.CollectAndCount(e) // still paused: the box must not be asked
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls while paused = %d, want 1", got)
+	}
+
+	now = now.Add(2 * time.Second)
+	testutil.CollectAndCount(e) // pause over: try again
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls after pause = %d, want 2", got)
+	}
+}
+
+func TestNonAuthErrorDoesNotPause(t *testing.T) {
+	var calls atomic.Int32
+	caller := fakeCaller{errAll: errors.New("connection refused"), calls: &calls}
+	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, slog.New(slog.DiscardHandler))
+
+	testutil.CollectAndCount(e)
+	testutil.CollectAndCount(e)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2 (network errors are retried on every scrape)", got)
+	}
+}
+
+func TestLogsOnlyStateChanges(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	caller := &switchableCaller{fail: true}
+	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, logger)
+
+	for range 3 {
+		testutil.CollectAndCount(e)
+	}
+	if n := strings.Count(buf.String(), "collector failed"); n != 1 {
+		t.Errorf("logged %d failures for 3 failing scrapes, want 1:\n%s", n, buf.String())
+	}
+
+	caller.fail = false
+	testutil.CollectAndCount(e)
+	testutil.CollectAndCount(e)
+	if n := strings.Count(buf.String(), "collector recovered"); n != 1 {
+		t.Errorf("logged %d recoveries, want 1:\n%s", n, buf.String())
+	}
+}
+
+// switchableCaller fails or answers with the spike data. Only used from one
+// goroutine at a time in TestLogsOnlyStateChanges.
+type switchableCaller struct{ fail bool }
+
+func (s *switchableCaller) Call(ctx context.Context, svc tr064.Service, action string, args map[string]string) (map[string]string, error) {
+	if s.fail {
+		return nil, errors.New("connection refused")
+	}
+	return fakeCaller{responses: spikeResponses()}.Call(ctx, svc, action, args)
 }

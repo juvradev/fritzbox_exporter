@@ -2,6 +2,9 @@ package collector
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,7 +36,9 @@ func NewWLAN(caller Caller, interfaces int) *WLAN {
 		info: prometheus.NewDesc(
 			namespace+"_wlan_info",
 			"SSID, standard and channel of a WLAN interface. Always 1.",
-			append(labels, "ssid", "standard", "channel"), nil,
+			// slices.Concat always returns a new slice; append could share
+			// memory with labels, which the other descriptors also use.
+			slices.Concat(labels, []string{"ssid", "standard", "channel"}), nil,
 		),
 		enabled: prometheus.NewDesc(
 			namespace+"_wlan_enabled",
@@ -58,24 +63,24 @@ func (w *WLAN) Describe(ch chan<- *prometheus.Desc) {
 	ch <- w.associations
 }
 
-// Scrape implements Scraper.
+// Scrape implements Scraper. A failing interface does not stop the others;
+// all errors are returned together.
 func (w *WLAN) Scrape(ctx context.Context, ch chan<- prometheus.Metric) error {
+	var errs []error
 	for i := 1; i <= w.interfaces; i++ {
 		if err := w.scrapeInterface(ctx, ch, i); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("wlan %d: %w", i, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (w *WLAN) scrapeInterface(ctx context.Context, ch chan<- prometheus.Metric, index int) error {
 	svc := tr064.WLANConfiguration(index)
 
+	// Without GetInfo the band label is unknown, so the interface is skipped
+	// instead of emitting series with a wrong label.
 	info, err := w.caller.Call(ctx, svc, "GetInfo", nil)
-	if err != nil {
-		return err
-	}
-	assoc, err := w.caller.Call(ctx, svc, "GetTotalAssociations", nil)
 	if err != nil {
 		return err
 	}
@@ -88,6 +93,10 @@ func (w *WLAN) scrapeInterface(ctx context.Context, ch chan<- prometheus.Metric,
 	ch <- prometheus.MustNewConstMetric(w.enabled, prometheus.GaugeValue,
 		boolToFloat(info["NewEnable"] == "1"), idx, band)
 
+	assoc, err := w.caller.Call(ctx, svc, "GetTotalAssociations", nil)
+	if err != nil {
+		return err
+	}
 	clients, err := parseFloat(assoc, "NewTotalAssociations")
 	if err != nil {
 		return err

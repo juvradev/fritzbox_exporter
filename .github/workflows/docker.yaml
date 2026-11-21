@@ -49,6 +49,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build a single-arch image into the local Docker daemon, so it can be
+      # scanned before anything is pushed. The multi-arch build below reuses
+      # the cached layers.
+      - name: Build image for scanning
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: fritzbox_exporter:scan
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+
+      # Fails the job on fixable HIGH/CRITICAL vulnerabilities in the image
+      # (base image and the Go modules compiled into the binary).
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: fritzbox_exporter:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
       - name: Build and push
         uses: docker/build-push-action@v7.4.0
         with:

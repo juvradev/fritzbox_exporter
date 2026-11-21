@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -78,15 +79,14 @@ func (w *WAN) Describe(ch chan<- *prometheus.Desc) {
 	ch <- w.connectionUptime
 }
 
-// Scrape implements Scraper.
+// Scrape implements Scraper. The three parts are independent: if one fails,
+// the others are still collected and all errors are returned together.
 func (w *WAN) Scrape(ctx context.Context, ch chan<- prometheus.Metric) error {
-	if err := w.scrapeLink(ctx, ch); err != nil {
-		return err
-	}
-	if err := w.scrapeTraffic(ctx, ch); err != nil {
-		return err
-	}
-	return w.scrapeConnection(ctx, ch)
+	return errors.Join(
+		w.scrapeLink(ctx, ch),
+		w.scrapeTraffic(ctx, ch),
+		w.scrapeConnection(ctx, ch),
+	)
 }
 
 // scrapeLink reports the physical link: access type, state and max bit rate.
@@ -100,17 +100,19 @@ func (w *WAN) scrapeLink(ctx context.Context, ch chan<- prometheus.Metric) error
 	ch <- prometheus.MustNewConstMetric(w.physicalLinkUp, prometheus.GaugeValue,
 		boolToFloat(v["NewPhysicalLinkStatus"] == "Up"))
 
-	down, err := parseFloat(v, "NewLayer1DownstreamMaxBitRate")
-	if err != nil {
-		return err
+	var errs []error
+	for _, dir := range []struct{ field, label string }{
+		{"NewLayer1DownstreamMaxBitRate", "downstream"},
+		{"NewLayer1UpstreamMaxBitRate", "upstream"},
+	} {
+		rate, err := parseFloat(v, dir.field)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(w.maxBitrate, prometheus.GaugeValue, rate, dir.label)
 	}
-	up, err := parseFloat(v, "NewLayer1UpstreamMaxBitRate")
-	if err != nil {
-		return err
-	}
-	ch <- prometheus.MustNewConstMetric(w.maxBitrate, prometheus.GaugeValue, down, "downstream")
-	ch <- prometheus.MustNewConstMetric(w.maxBitrate, prometheus.GaugeValue, up, "upstream")
-	return nil
+	return errors.Join(errs...)
 }
 
 // scrapeTraffic reports the byte counters. On this firmware they are 64 bit
@@ -124,18 +126,21 @@ func (w *WAN) scrapeTraffic(ctx context.Context, ch chan<- prometheus.Metric) er
 		{"GetTotalBytesSent", "NewTotalBytesSent", w.bytesSent},
 	}
 
+	var errs []error
 	for _, c := range counters {
 		v, err := w.caller.Call(ctx, tr064.WANCommonInterfaceConfig, c.action, nil)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		value, err := parseFloat(v, c.field)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.CounterValue, value)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // scrapeConnection reports whether the internet connection is up and for how

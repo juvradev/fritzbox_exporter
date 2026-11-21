@@ -85,7 +85,7 @@ All settings are environment variables.
 |-----------------------|:--------:|----------------------------|-------------|
 | `FRITZBOX_USERNAME`   | ✅       | –                          | FRITZ!Box user |
 | `FRITZBOX_PASSWORD`   | ✅       | –                          | Password of that user |
-| `FRITZBOX_URL`        |          | `http://fritz.box:49000`   | TR-064 URL of the box. Use the IP inside containers/Kubernetes, `fritz.box` is usually not resolvable there |
+| `FRITZBOX_URL`        |          | `http://fritz.box:49000`   | TR-064 URL of the box (`http` only, see below). Use the IP inside containers/Kubernetes, `fritz.box` is usually not resolvable there |
 | `FRITZBOX_WEBUI_URL`  |          | derived from `FRITZBOX_URL` (same host, no port) | Web UI URL, only used by the `docsis` collector |
 | `FRITZBOX_COLLECTORS` |          | `device,wan,wlan,docsis`   | Comma-separated list of enabled collectors |
 | `LISTEN_ADDRESS`      |          | `:9133`                    | Address of the HTTP server |
@@ -94,6 +94,24 @@ All settings are environment variables.
 
 The exporter exits immediately with a clear error if the configuration is invalid.
 The password is never logged.
+
+**Why only `http`?** The FRITZ!Box serves HTTPS with a self-signed certificate that
+cannot be verified, so `https://` URLs are rejected at startup. The password is not
+sent in clear text over `http` either: TR-064 uses HTTP digest authentication and the
+web UI a PBKDF2 challenge-response login.
+
+## Behaviour
+
+- **Failing collectors** are reported as `fritzbox_scrape_collector_success{collector="…"} 0`
+  while the other collectors keep working. Within a collector, parts that still work
+  (e.g. the byte counters when the link query fails) are exported as well.
+- **Logging:** a failure is logged once when it starts and once when the collector
+  recovers, not on every scrape.
+- **Wrong credentials:** after the box rejects the login, the affected collector pauses
+  for 5 minutes (or as long as the box blocks logins) instead of retrying on every
+  scrape, which could make the box block the user for longer and longer.
+- **Load protection:** at most 2 `/metrics` requests are processed at the same time,
+  because each one queries the box. Additional requests get HTTP `503`.
 
 ## Endpoints
 
@@ -158,6 +176,13 @@ scrape_configs:
       - targets: ["<exporter-host>:9133"]
 ```
 
+## Kubernetes
+
+[`deploy/kubernetes/networkpolicy.yaml`](deploy/kubernetes/networkpolicy.yaml) is an
+example NetworkPolicy that allows only Prometheus to scrape the exporter. `/metrics`
+contains details about your home network (SSID, firmware), so it should not be
+reachable from every pod in the cluster.
+
 ## Development
 
 ```bash
@@ -184,6 +209,7 @@ internal/tr064        TR-064 SOAP client with HTTP digest auth
 internal/webui        web UI client (PBKDF2 login, used for DOCSIS)
 internal/collector    Prometheus collectors: device, wan, wlan, docsis
 internal/server       HTTP server, health endpoints, graceful shutdown
+deploy/kubernetes     example Kubernetes manifests
 ```
 
 ## Releases
