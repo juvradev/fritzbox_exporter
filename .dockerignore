@@ -1,0 +1,16 @@
+# Only what the build needs goes into the build context.
+.git
+.github
+.idea
+.vscode
+.DS_Store
+
+# Spike data contains device names, serial numbers and IPs.
+friz-spike
+
+# Local credentials and build output
+.env
+*.local
+dist
+fritzbox_exporter
+*.md
