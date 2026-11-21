@@ -1,7 +1,7 @@
 package tr064
 
 import (
-	"crypto/md5" //nolint:gosec // MD5 is mandated by HTTP digest auth (RFC 2617).
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -11,7 +11,6 @@ import (
 	"strings"
 )
 
-// DigestTransport is an http.RoundTripper that adds HTTP digest
 // authentication (RFC 2617, algorithm MD5, qop=auth) to requests.
 //
 // Every request is first sent without credentials. If the server answers
