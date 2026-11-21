@@ -38,7 +38,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ScrapeTimeout != DefaultScrapeTimeout {
 		t.Errorf("ScrapeTimeout = %v, want %v", cfg.ScrapeTimeout, DefaultScrapeTimeout)
 	}
-	if want := []string{"device", "wan", "wlan"}; !slices.Equal(cfg.Collectors, want) {
+	if cfg.WebUIURL != "http://fritz.box" {
+		t.Errorf("WebUIURL = %q, want http://fritz.box (derived from FRITZBOX_URL)", cfg.WebUIURL)
+	}
+	if want := []string{"device", "wan", "wlan", "docsis"}; !slices.Equal(cfg.Collectors, want) {
 		t.Errorf("Collectors = %v, want %v", cfg.Collectors, want)
 	}
 }
@@ -59,6 +62,9 @@ func TestLoadCustomValues(t *testing.T) {
 
 	if cfg.FritzBoxURL != "https://192.168.178.1:49443" {
 		t.Errorf("FritzBoxURL = %q (trailing slash should be removed)", cfg.FritzBoxURL)
+	}
+	if cfg.WebUIURL != "https://192.168.178.1" {
+		t.Errorf("WebUIURL = %q, want https://192.168.178.1 (port dropped)", cfg.WebUIURL)
 	}
 	if cfg.Username != "prometheus" {
 		t.Errorf("Username = %q (should be trimmed)", cfg.Username)
@@ -102,6 +108,7 @@ func TestLoadErrors(t *testing.T) {
 		{"unknown collector", EnvCollectors, "wan,dect", `unknown collector "dect"`},
 		{"duplicate collector", EnvCollectors, "wan,wan", "listed twice"},
 		{"no collector", EnvCollectors, " , ", "at least one collector"},
+		{"bad web ui url", EnvWebUIURL, "fritz.box", "FRITZBOX_WEBUI_URL"},
 	}
 
 	for _, tt := range tests {

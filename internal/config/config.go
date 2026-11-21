@@ -25,12 +25,13 @@ const (
 	EnvListenAddress    = "LISTEN_ADDRESS"
 	EnvLogLevel         = "LOG_LEVEL"
 	EnvScrapeTimeout    = "SCRAPE_TIMEOUT"
+	EnvWebUIURL         = "FRITZBOX_WEBUI_URL"
 )
 
 // Defaults for optional settings.
 const (
 	DefaultFritzBoxURL   = "http://fritz.box:49000"
-	DefaultCollectors    = "device,wan,wlan"
+	DefaultCollectors    = "device,wan,wlan,docsis"
 	DefaultListenAddress = ":9133"
 	DefaultLogLevel      = "info"
 	DefaultScrapeTimeout = 10 * time.Second
@@ -48,6 +49,7 @@ type Config struct {
 	ListenAddress string        // address for the HTTP server, e.g. ":9133"
 	LogLevel      slog.Level    // minimum level for log output
 	ScrapeTimeout time.Duration // upper bound for one call to the box
+	WebUIURL      string        // web UI base URL for DOCSIS data, e.g. http://10.10.0.1
 }
 
 // Load reads the configuration from the process environment.
@@ -93,6 +95,12 @@ func load(lookup lookupFunc) (Config, error) {
 
 	if err := validateURL(cfg.FritzBoxURL); err != nil {
 		errs = append(errs, fmt.Errorf("%s: %w", EnvFritzBoxURL, err))
+	} else {
+		// The web UI runs on the same host as TR-064, but on the default port.
+		cfg.WebUIURL = strings.TrimRight(get(EnvWebUIURL, webUIFromTR064(cfg.FritzBoxURL)), "/")
+		if err := validateURL(cfg.WebUIURL); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvWebUIURL, err))
+		}
 	}
 
 	if err := cfg.LogLevel.UnmarshalText([]byte(get(EnvLogLevel, DefaultLogLevel))); err != nil {
@@ -137,6 +145,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("listen_address", c.ListenAddress),
 		slog.String("log_level", c.LogLevel.String()),
 		slog.String("scrape_timeout", c.ScrapeTimeout.String()), // "10s" instead of nanoseconds
+		slog.String("webui_url", c.WebUIURL),
 	)
 }
 
@@ -152,6 +161,17 @@ func validateURL(raw string) error {
 		return fmt.Errorf("missing host in %q", raw)
 	}
 	return nil
+}
+
+// webUIFromTR064 derives the web UI URL from the TR-064 URL by dropping the
+// port: http://192.168.178.1:49000 -> http://192.168.178.1.
+// The input must already be a valid URL.
+func webUIFromTR064(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Scheme + "://" + u.Hostname()
 }
 
 // parseCollectors turns "wan, wlan" into ["wan", "wlan"] and rejects
