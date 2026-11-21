@@ -1,10 +1,13 @@
 package tr064
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -134,5 +137,122 @@ func TestDigestTransportPassesThroughWithoutChallenge(t *testing.T) {
 
 	if requests != 1 {
 		t.Errorf("server saw %d requests, want 1", requests)
+	}
+}
+
+// digestServer is a fake TR-064 endpoint that checks digest credentials.
+// With singleUse it accepts every nonce only once, like some servers do.
+type digestServer struct {
+	t         *testing.T
+	singleUse bool
+
+	mu       sync.Mutex
+	requests int
+	rejected int               // requests with credentials that were rejected
+	issued   int               // number of nonces handed out
+	lastNC   map[string]uint64 // highest nonce count seen per nonce
+}
+
+func newDigestServer(t *testing.T, singleUse bool) (*digestServer, *httptest.Server) {
+	t.Helper()
+	d := &digestServer{t: t, singleUse: singleUse, lastNC: map[string]uint64{}}
+	srv := httptest.NewServer(d)
+	t.Cleanup(srv.Close)
+	return d, srv
+}
+
+func (d *digestServer) challenge(w http.ResponseWriter) {
+	d.issued++
+	nonce := fmt.Sprintf("nonce-%d", d.issued)
+	d.lastNC[nonce] = 0
+	w.Header().Set("WWW-Authenticate", `Digest realm="F!Box SOAP-Auth", nonce="`+nonce+`", algorithm=MD5, qop="auth"`)
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
+func (d *digestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.requests++
+
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		d.challenge(w)
+		return
+	}
+
+	p := parseParams(strings.TrimPrefix(auth, "Digest "))
+	last, known := d.lastNC[p["nonce"]]
+	nc, _ := strconv.ParseUint(p["nc"], 16, 32)
+	want := digestResponse("prometheus", "secret", "F!Box SOAP-Auth", r.Method, r.URL.RequestURI(),
+		p["nonce"], p["nc"], p["cnonce"], p["qop"])
+
+	switch {
+	case !known || nc <= last || p["response"] != want:
+		d.rejected++
+		d.challenge(w) // unknown or replayed nonce, or wrong credentials
+	case d.singleUse && last > 0:
+		d.rejected++
+		d.challenge(w) // nonce was already used once
+	default:
+		d.lastNC[p["nonce"]] = nc
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func digestClient() *http.Client {
+	return &http.Client{Transport: &DigestTransport{Username: "prometheus", Password: "secret"}}
+}
+
+func doRequests(t *testing.T, c *http.Client, url string, n int) {
+	t.Helper()
+	for i := range n {
+		resp, err := c.Post(url, "text/xml", strings.NewReader("<soap/>"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: status %d, want 200", i, resp.StatusCode)
+		}
+	}
+}
+
+func TestDigestTransportReusesNonce(t *testing.T) {
+	d, srv := newDigestServer(t, false)
+
+	doRequests(t, digestClient(), srv.URL+"/upnp/control/deviceinfo", 3)
+
+	// 1 challenge + 3 authenticated requests instead of 3 × 2.
+	if d.requests != 4 {
+		t.Errorf("server saw %d requests, want 4", d.requests)
+	}
+	if d.issued != 1 {
+		t.Errorf("server issued %d nonces, want 1", d.issued)
+	}
+}
+
+func TestDigestTransportFallsBackForSingleUseNonces(t *testing.T) {
+	d, srv := newDigestServer(t, true)
+
+	doRequests(t, digestClient(), srv.URL+"/upnp/control/deviceinfo", 6)
+
+	// Every call still succeeds with 2 requests: a rejected reuse attempt
+	// gets a fresh challenge in its 401 response, which is answered directly.
+	if d.requests != 12 {
+		t.Errorf("server saw %d requests, want 12", d.requests)
+	}
+	// But each rejected reuse looks like a failed login to the server, so
+	// reuse must stop after maxReuseRejections attempts.
+	if d.rejected != maxReuseRejections {
+		t.Errorf("server rejected %d logins, want %d", d.rejected, maxReuseRejections)
+	}
+}
+
+func TestDigestAuthorizationEscapesQuotes(t *testing.T) {
+	tr := &DigestTransport{Username: `pro"me\theus`, Password: "p", newCnonce: func() string { return "c" }}
+	got := tr.authorization(challenge{realm: "r", nonce: "n", qop: "auth"}, 1, "POST", "/x")
+
+	if !strings.Contains(got, `username="pro\"me\\theus"`) {
+		t.Errorf("username not escaped: %s", got)
 	}
 }

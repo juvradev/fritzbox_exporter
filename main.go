@@ -68,7 +68,7 @@ func run(logger *slog.Logger, level *slog.LevelVar) error {
 	client := tr064.NewClient(cfg.FritzBoxURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout)
 	registry.MustRegister(collector.NewExporter(scrapers(cfg, client, logger), cfg.ScrapeTimeout, logger))
 
-	srv := server.New(cfg.ListenAddress, registry, logger)
+	srv := server.New(cfg.ListenAddress, registry, logger, cfg.ScrapeTimeout)
 	return srv.Run(ctx, shutdownTimeout)
 }
 

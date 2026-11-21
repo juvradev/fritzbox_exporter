@@ -3,7 +3,10 @@
 # ---- Build stage -------------------------------------------------------------
 # Runs on the build machine's own architecture ($BUILDPLATFORM) and
 # cross-compiles for the target, which is much faster than emulating arm64.
-FROM --platform=$BUILDPLATFORM golang:1.27.4 AS build
+#
+# Base images are pinned by digest: a tag can be moved to a different image,
+# a digest cannot. Dependabot updates tag and digest together.
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -29,7 +32,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # ---- Runtime stage -----------------------------------------------------------
 # No shell, no package manager, only CA certificates, tzdata and a non-root user.
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 
 COPY --from=build /out/fritzbox_exporter /fritzbox_exporter
 

@@ -149,13 +149,19 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
+// validateURL accepts only plain http URLs.
+//
+// HTTPS is rejected on purpose: the FRITZ!Box uses a self-signed certificate
+// that the clients cannot verify, so https would always fail at runtime.
+// Over http the password is never sent in clear text either: TR-064 uses
+// digest auth and the web UI a PBKDF2 challenge-response login.
 func validateURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return err
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("scheme must be http or https, got %q", raw)
+	if u.Scheme != "http" {
+		return fmt.Errorf("scheme must be http (https is not supported, the box uses a self-signed certificate), got %q", raw)
 	}
 	if u.Host == "" {
 		return fmt.Errorf("missing host in %q", raw)
@@ -164,14 +170,19 @@ func validateURL(raw string) error {
 }
 
 // webUIFromTR064 derives the web UI URL from the TR-064 URL by dropping the
-// port: http://192.168.178.1:49000 -> http://192.168.178.1.
+// port: http://192.168.178.1:49000 -> http://192.168.178.1 and
+// http://[fd00::1]:49000 -> http://[fd00::1].
 // The input must already be a valid URL.
 func webUIFromTR064(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return raw
 	}
-	return u.Scheme + "://" + u.Hostname()
+	host := u.Hostname() // without port and without IPv6 brackets
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // IPv6 literals need brackets in URLs
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: host}).String()
 }
 
 // parseCollectors turns "wan, wlan" into ["wan", "wlan"] and rejects

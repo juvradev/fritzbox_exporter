@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -45,7 +46,7 @@ func NewDOCSIS(fetcher PageFetcher) *DOCSIS {
 		channelInfo: prometheus.NewDesc(
 			namespace+"_docsis_channel_info",
 			"Frequency and modulation of a DOCSIS channel. Always 1.",
-			append(channel, "frequency", "modulation"), nil,
+			slices.Concat(channel, []string{"frequency", "modulation"}), nil,
 		),
 		power: prometheus.NewDesc(
 			namespace+"_docsis_power_level_dbuv",

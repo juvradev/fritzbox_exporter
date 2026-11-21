@@ -16,6 +16,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// maxMetricsRequestsInFlight limits concurrent /metrics requests. Every
+// request queries the FRITZ!Box, so this protects the box from being
+// hammered (e.g. by a second Prometheus or a "watch curl" loop).
+const maxMetricsRequestsInFlight = 2
+
 // Server is an HTTP server with health endpoints and graceful shutdown.
 type Server struct {
 	http   *http.Server
@@ -24,27 +29,46 @@ type Server struct {
 }
 
 // New creates a server that listens on addr and serves the metrics
-// from registry.
-func New(addr string, registry *prometheus.Registry, logger *slog.Logger) *Server {
+// from registry. scrapeTimeout is the upper bound of one scrape; the
+// HTTP timeouts are derived from it.
+func New(addr string, registry *prometheus.Registry, logger *slog.Logger, scrapeTimeout time.Duration) *Server {
+	// /metrics gives up a little after the collectors' own timeout, and the
+	// connection must stay writable until then.
+	metricsTimeout := scrapeTimeout + 2*time.Second
+
 	s := &Server{logger: logger}
 	s.http = &http.Server{
 		Addr:    addr,
-		Handler: s.routes(registry),
+		Handler: s.routes(registry, metricsTimeout),
 		// Protects against clients that open a connection and never send
 		// headers (Slowloris). Required by the gosec linter as well.
 		ReadHeaderTimeout: 5 * time.Second,
+		// No endpoint accepts a request body, so reading must be quick.
+		ReadTimeout: 10 * time.Second,
+		// Must be longer than the slowest handler (/metrics).
+		WriteTimeout: metricsTimeout + 5*time.Second,
+		// Close idle keep-alive connections after a while.
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 16 << 10, // 16 KiB is plenty for these endpoints
 	}
 	return s
 }
 
 // routes registers all endpoints. Go 1.22+ patterns like "GET /healthz"
 // match the method as well, so a POST gets 405 automatically.
-func (s *Server) routes(registry *prometheus.Registry) http.Handler {
+func (s *Server) routes(registry *prometheus.Registry, metricsTimeout time.Duration) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		// Log errors that happen while collecting or encoding metrics.
 		ErrorLog: slog.NewLogLogger(s.logger.Handler(), slog.LevelError),
+		// Serve all valid metrics even if one collector emits a broken one,
+		// instead of failing the whole request with HTTP 500.
+		ErrorHandling: promhttp.ContinueOnError,
+		// Additional requests get HTTP 503 instead of querying the box again.
+		MaxRequestsInFlight: maxMetricsRequestsInFlight,
+		// Answer with HTTP 503 if a scrape takes too long.
+		Timeout: metricsTimeout,
 		// Also expose promhttp_metric_handler_* metrics about /metrics itself.
 		Registry: registry,
 	}))
@@ -121,8 +145,9 @@ func (s *Server) Run(ctx context.Context, shutdownTimeout time.Duration) error {
 	s.ready.Store(false)
 	s.logger.Info("shutting down http server", "timeout", shutdownTimeout.String())
 
-	// ctx is already cancelled, so the shutdown needs a fresh context.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	// ctx is already cancelled, so the shutdown needs a context that keeps
+	// ctx's values but not its cancellation.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
 
 	if err := s.http.Shutdown(shutdownCtx); err != nil {
