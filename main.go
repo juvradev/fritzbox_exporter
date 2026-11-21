@@ -12,8 +12,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
+	"github.com/juvradev/fritzbox_exporter/internal/collector"
 	"github.com/juvradev/fritzbox_exporter/internal/config"
 	"github.com/juvradev/fritzbox_exporter/internal/server"
+	"github.com/juvradev/fritzbox_exporter/internal/tr064"
 )
 
 // version is set at build time:
@@ -61,9 +63,29 @@ func run(logger *slog.Logger, level *slog.LevelVar) error {
 		collectors.NewBuildInfoCollector(),                                // go_build_info
 	)
 
-	// TODO(M3): create the tr064 client and register the FRITZ!Box collectors
-	// for every name in cfg.Collectors.
+	// One TR-064 client is shared by all collectors.
+	client := tr064.NewClient(cfg.FritzBoxURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout)
+	registry.MustRegister(collector.NewExporter(scrapers(cfg, client, logger), cfg.ScrapeTimeout, logger))
 
 	srv := server.New(cfg.ListenAddress, registry, logger)
 	return srv.Run(ctx, shutdownTimeout)
+}
+
+// scrapers builds the enabled collectors in the order given in FRITZBOX_COLLECTORS.
+func scrapers(cfg config.Config, client collector.Caller, logger *slog.Logger) []collector.Scraper {
+	var list []collector.Scraper
+	for _, name := range cfg.Collectors {
+		switch name {
+		case "device":
+			list = append(list, collector.NewDevice(client))
+		case "wan":
+			list = append(list, collector.NewWAN(client))
+		case "wlan":
+			list = append(list, collector.NewWLAN(client, collector.DefaultWLANInterfaces))
+		default:
+			// "docsis" is accepted by the config but implemented in M5.
+			logger.Warn("collector not implemented yet, skipping", "collector", name)
+		}
+	}
+	return list
 }
