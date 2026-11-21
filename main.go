@@ -16,6 +16,7 @@ import (
 	"github.com/juvradev/fritzbox_exporter/internal/config"
 	"github.com/juvradev/fritzbox_exporter/internal/server"
 	"github.com/juvradev/fritzbox_exporter/internal/tr064"
+	"github.com/juvradev/fritzbox_exporter/internal/webui"
 )
 
 // version is set at build time:
@@ -82,9 +83,12 @@ func scrapers(cfg config.Config, client collector.Caller, logger *slog.Logger) [
 			list = append(list, collector.NewWAN(client))
 		case "wlan":
 			list = append(list, collector.NewWLAN(client, collector.DefaultWLANInterfaces))
+		case "docsis":
+			// DOCSIS data is only available via the web UI, not via TR-064.
+			web := webui.NewClient(cfg.WebUIURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout)
+			list = append(list, collector.NewDOCSIS(web))
 		default:
-			// "docsis" is accepted by the config but implemented in M5.
-			logger.Warn("collector not implemented yet, skipping", "collector", name)
+			logger.Warn("unknown collector, skipping", "collector", name)
 		}
 	}
 	return list

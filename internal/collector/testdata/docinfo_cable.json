@@ -1,0 +1,26 @@
+{
+  "pid": "docInfo",
+  "sid": "0123456789abcdef",
+  "hide": {
+    "docInfo": false
+  },
+  "data": {
+    "channelDs": {
+      "docsis30": [
+        {"channelID": 1, "frequency": "602", "type": "256QAM", "powerLevel": "5.6", "mse": "-36.4", "corrErrors": 123, "nonCorrErrors": 0, "latency": 0.32},
+        {"channelID": 2, "frequency": "610", "type": "256QAM", "powerLevel": 4.9, "mse": -35.8, "corrErrors": "456", "nonCorrErrors": "2", "latency": 0.32}
+      ],
+      "docsis31": [
+        {"channelID": 33, "frequency": "751 - 861", "type": "4096QAM", "powerLevel": "7.1", "mer": "41", "fft": "4K", "plc": "754"}
+      ]
+    },
+    "channelUs": {
+      "docsis30": [
+        {"channelID": 1, "frequency": "51", "type": "64QAM", "powerLevel": "43.0", "multiplex": "ATDMA"}
+      ],
+      "docsis31": [
+        {"channelID": 9, "frequency": "29.8 - 64.8", "type": "1024QAM", "powerLevel": "-", "fft": "2K", "activesub": "1400"}
+      ]
+    }
+  }
+}

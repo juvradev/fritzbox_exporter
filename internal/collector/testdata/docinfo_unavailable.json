@@ -1,0 +1,14 @@
+{
+  "pid": "overview",
+  "sid": "0123456789abcdef",
+  "hide": {
+    "docInfo": true,
+    "docOv": true
+  },
+  "data": {
+    "docsis": {
+      "txt": "deaktiviert",
+      "title": "Kabel"
+    }
+  }
+}
