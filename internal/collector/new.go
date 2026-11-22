@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 )
@@ -53,19 +54,28 @@ var knownCollectors = []knownCollector{
 }
 
 // New builds an Exporter that runs the Collectors named in o.Collectors,
-// or every known Collector if o.Collectors is nil. It checks every name and the client each Collector needs, and returns one
-// error describing all problems. A client no enabled Collector needs may be
-// nil.
+// or every known Collector if o.Collectors is nil. It checks every name and
+// the client each Collector needs, rejects an empty list and names listed
+// twice, and returns one error describing all problems. A client no enabled
+// Collector needs may be nil.
 func New(o Options) (*Exporter, error) {
 	var (
-		collectors []namedScraper
+		collectors []enabledCollector
 		errs       []error
 	)
 	names := o.Collectors
 	if names == nil {
 		names = knownNames()
 	}
-	for _, name := range names {
+	if len(names) == 0 {
+		errs = append(errs, errors.New("at least one collector must be enabled"))
+	}
+	for i, name := range names {
+		if slices.Contains(names[:i], name) {
+			// Reported once per extra occurrence; the first one is checked below.
+			errs = append(errs, fmt.Errorf("collector %q listed twice", name))
+			continue
+		}
 		known, ok := lookupCollector(name)
 		if !ok {
 			errs = append(errs, fmt.Errorf("unknown collector %q (known: %s)", name, strings.Join(knownNames(), ", ")))
@@ -75,17 +85,15 @@ func New(o Options) (*Exporter, error) {
 			errs = append(errs, fmt.Errorf("collector %q needs a %s, but none was given", name, known.needs.name))
 			continue
 		}
-		collectors = append(collectors, namedScraper{name: name, scraper: known.build(o)})
+		collectors = append(collectors, enabledCollector{name: name, scraper: known.build(o)})
 	}
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("invalid collectors: %w", errors.Join(errs...))
 	}
 
-	enabled := make([]string, len(collectors))
-	for i, c := range collectors {
-		enabled[i] = c.name
-	}
-	o.Logger.Info("collectors enabled", "collectors", enabled)
+	// Every name passed the checks, so names lists exactly the enabled
+	// Collectors in order.
+	o.Logger.Info("collectors enabled", "collectors", names)
 
 	return newExporter(collectors, o.ScrapeTimeout, o.Logger), nil
 }

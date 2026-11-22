@@ -46,17 +46,19 @@ type Scraper interface {
 	Scrape(ctx context.Context, ch chan<- prometheus.Metric) error
 }
 
-// namedScraper is a Collector together with its name, which is used in the
-// "collector" label and in log messages.
-type namedScraper struct {
+// enabledCollector is a Collector the Exporter runs, together with its name,
+// which is used in the "collector" label and in log messages, and the
+// outcome of its previous scrape. The zero state is ready to use.
+type enabledCollector struct {
 	name    string
 	scraper Scraper
+	state   collectorState
 }
 
 // Exporter runs all Collectors on every Prometheus scrape.
 type Exporter struct {
-	collectors  []namedScraper
-	states      []*scraperState // one per Collector, same order
+	// Each entry holds a mutex, so entries are used by index, never copied.
+	collectors  []enabledCollector
 	timeout     time.Duration
 	authBackoff time.Duration
 	now         func() time.Time // replaceable in tests
@@ -67,26 +69,20 @@ type Exporter struct {
 	scrapeDuration *prometheus.Desc
 }
 
-// scraperState remembers the outcome of the previous scrape, so failures are
-// logged once when they start (not on every scrape) and authentication
+// collectorState remembers the outcome of the previous scrape, so failures
+// are logged once when they start (not on every scrape) and authentication
 // errors can pause the Collector. Parallel /metrics requests share it.
-type scraperState struct {
+type collectorState struct {
 	mu          sync.Mutex
 	failing     bool
 	pausedUntil time.Time
 }
 
 // newExporter creates an Exporter that runs the given Collectors in order.
-// timeout limits one complete scrape.
-func newExporter(collectors []namedScraper, timeout time.Duration, logger *slog.Logger) *Exporter {
-	states := make([]*scraperState, len(collectors))
-	for i := range states {
-		states[i] = &scraperState{}
-	}
-
+// It takes ownership of the slice. timeout limits one complete scrape.
+func newExporter(collectors []enabledCollector, timeout time.Duration, logger *slog.Logger) *Exporter {
 	return &Exporter{
 		collectors:  collectors,
-		states:      states,
 		timeout:     timeout,
 		authBackoff: DefaultAuthBackoff,
 		now:         time.Now,
@@ -114,8 +110,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.up
 	ch <- e.scrapeSuccess
 	ch <- e.scrapeDuration
-	for _, c := range e.collectors {
-		c.scraper.Describe(ch)
+	for i := range e.collectors {
+		e.collectors[i].scraper.Describe(ch)
 	}
 }
 
@@ -129,11 +125,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		wg       sync.WaitGroup
 		anyAlive atomic.Bool
 	)
-	for i, c := range e.collectors {
+	for i := range e.collectors {
+		c := &e.collectors[i]
 		// The Collectors are independent, so they run in parallel; the scrape
 		// takes as long as the slowest one instead of the sum of all.
 		wg.Go(func() {
-			ok, duration := e.runScraper(ctx, c, e.states[i], ch)
+			ok, duration := e.runCollector(ctx, c, ch)
 			if ok {
 				anyAlive.Store(true)
 			}
@@ -146,9 +143,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, boolToFloat(anyAlive.Load()))
 }
 
-// runScraper runs one Collector unless it is paused, and records the outcome.
-// It returns whether the Collector succeeded and how long it took in seconds.
-func (e *Exporter) runScraper(ctx context.Context, c namedScraper, st *scraperState, ch chan<- prometheus.Metric) (bool, float64) {
+// runCollector runs one Collector unless it is paused, and records the
+// outcome. It returns whether the Collector succeeded and how long it took
+// in seconds.
+func (e *Exporter) runCollector(ctx context.Context, c *enabledCollector, ch chan<- prometheus.Metric) (bool, float64) {
+	st := &c.state
 	st.mu.Lock()
 	pausedUntil := st.pausedUntil
 	st.mu.Unlock()
@@ -170,7 +169,7 @@ func (e *Exporter) runScraper(ctx context.Context, c namedScraper, st *scraperSt
 // record updates the Collector state and logs only on changes: the first
 // failure, a recovery, or a new pause. Repeated identical failures are
 // logged at debug level, so an unreachable box does not flood the logs.
-func (e *Exporter) record(name string, st *scraperState, err error, duration float64) {
+func (e *Exporter) record(name string, st *collectorState, err error, duration float64) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 

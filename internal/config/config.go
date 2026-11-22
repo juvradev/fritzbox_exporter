@@ -114,7 +114,7 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 
 	// Unset or blank leaves the list nil, which enables every Collector.
-	// The names themselves are checked by the collector module.
+	// The names themselves are checked by the collector package.
 	if raw := get(EnvCollectors, ""); raw != "" {
 		collectors, err := parseCollectors(raw)
 		if err != nil {
@@ -182,7 +182,7 @@ func webUIFromTR064(raw string) string {
 
 // parseCollectors turns "WAN, wlan" into ["wan", "wlan"] and rejects
 // duplicate names and a list without any name. It does not know which
-// Collectors exist; the collector module rejects unknown names.
+// Collectors exist; the collector package rejects unknown names.
 func parseCollectors(raw string) ([]string, error) {
 	var names []string
 	for name := range strings.SplitSeq(raw, ",") {

@@ -85,10 +85,10 @@ func spikeResponses() map[string]map[string]string {
 }
 
 func tr064Exporter(caller Caller) *Exporter {
-	return newExporter([]namedScraper{
-		{"device", newDevice(caller)},
-		{"wan", newWAN(caller)},
-		{"wlan", newWLAN(caller, wlanInterfaces)},
+	return newExporter([]enabledCollector{
+		{name: "device", scraper: newDevice(caller)},
+		{name: "wan", scraper: newWAN(caller)},
+		{name: "wlan", scraper: newWLAN(caller, wlanInterfaces)},
 	}, 5*time.Second, slog.New(slog.DiscardHandler))
 }
 
@@ -311,7 +311,7 @@ fritzbox_scrape_collector_success{collector="wlan"} 0
 func TestAuthErrorPausesCollector(t *testing.T) {
 	var calls atomic.Int32
 	caller := fakeCaller{errAll: fmt.Errorf("tr064 GetInfo: %w", tr064.ErrUnauthorized), calls: &calls}
-	e := newExporter([]namedScraper{{"device", newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
 
 	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	e.now = func() time.Time { return now }
@@ -337,7 +337,7 @@ func TestAuthErrorPausesCollector(t *testing.T) {
 func TestNonAuthErrorDoesNotPause(t *testing.T) {
 	var calls atomic.Int32
 	caller := fakeCaller{errAll: errors.New("connection refused"), calls: &calls}
-	e := newExporter([]namedScraper{{"device", newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
 
 	testutil.CollectAndCount(e)
 	testutil.CollectAndCount(e)
@@ -351,7 +351,7 @@ func TestLogsOnlyStateChanges(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	caller := &switchableCaller{fail: true}
-	e := newExporter([]namedScraper{{"device", newDevice(caller)}}, time.Second, logger)
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, logger)
 
 	for range 3 {
 		testutil.CollectAndCount(e)

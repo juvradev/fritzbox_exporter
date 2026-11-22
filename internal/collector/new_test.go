@@ -191,6 +191,31 @@ func TestNewLogsEnabledCollectors(t *testing.T) {
 	}
 }
 
+func TestNewRejectsEmptyList(t *testing.T) {
+	o := newOptions()
+	o.Collectors = []string{} // set, but without any name; nil would mean all
+
+	_, err := New(o)
+	if err == nil {
+		t.Fatal("New accepted an empty Collector list")
+	}
+	if want := "at least one collector"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
+	}
+}
+
+func TestNewRejectsDuplicateCollector(t *testing.T) {
+	_, err := New(newOptions("wan", "device", "wan"))
+	if err == nil {
+		t.Fatal("New accepted a Collector listed twice")
+	}
+	for _, want := range []string{`"wan"`, "listed twice"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestNewKeepsTheGivenOrder(t *testing.T) {
 	var buf bytes.Buffer
 	o := newOptions("docsis", "wlan", "device")
