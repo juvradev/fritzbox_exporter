@@ -51,6 +51,20 @@ func run(logger *slog.Logger, level *slog.LevelVar) error {
 	level.Set(cfg.LogLevel)
 	logger.Info("starting fritzbox_exporter", "version", version, "config", cfg)
 
+	// Both clients are built unconditionally: neither does network I/O
+	// before its first request, so a client no enabled Collector needs
+	// never contacts the box. The web UI client logs in lazily.
+	exporter, err := collector.New(collector.Options{
+		Collectors:    cfg.Collectors,
+		TR064:         tr064.NewClient(cfg.FritzBoxURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout),
+		WebUI:         webui.NewClient(cfg.WebUIURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout),
+		ScrapeTimeout: cfg.ScrapeTimeout,
+		Logger:        logger,
+	})
+	if err != nil {
+		return err
+	}
+
 	// ctx is cancelled on Ctrl+C (SIGINT) or when Kubernetes stops the pod (SIGTERM).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -62,34 +76,9 @@ func run(logger *slog.Logger, level *slog.LevelVar) error {
 		collectors.NewGoCollector(),                                       // go_* (goroutines, GC, memory)
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), // process_* (CPU, RSS, fds)
 		collectors.NewBuildInfoCollector(),                                // go_build_info
+		exporter,
 	)
-
-	// One TR-064 client is shared by all collectors.
-	client := tr064.NewClient(cfg.FritzBoxURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout)
-	registry.MustRegister(collector.NewExporter(scrapers(cfg, client, logger), cfg.ScrapeTimeout, logger))
 
 	srv := server.New(cfg.ListenAddress, registry, logger, cfg.ScrapeTimeout)
 	return srv.Run(ctx, shutdownTimeout)
-}
-
-// scrapers builds the enabled collectors in the order given in FRITZBOX_COLLECTORS.
-func scrapers(cfg config.Config, client collector.Caller, logger *slog.Logger) []collector.Scraper {
-	var list []collector.Scraper
-	for _, name := range cfg.Collectors {
-		switch name {
-		case "device":
-			list = append(list, collector.NewDevice(client))
-		case "wan":
-			list = append(list, collector.NewWAN(client))
-		case "wlan":
-			list = append(list, collector.NewWLAN(client, collector.DefaultWLANInterfaces))
-		case "docsis":
-			// DOCSIS data is only available via the web UI, not via TR-064.
-			web := webui.NewClient(cfg.WebUIURL, cfg.Username, cfg.Password, cfg.ScrapeTimeout)
-			list = append(list, collector.NewDOCSIS(web))
-		default:
-			logger.Warn("unknown collector, skipping", "collector", name)
-		}
-	}
-	return list
 }

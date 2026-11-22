@@ -84,16 +84,16 @@ func spikeResponses() map[string]map[string]string {
 	}
 }
 
-func newExporter(caller Caller) *Exporter {
-	return NewExporter([]Scraper{
-		NewDevice(caller),
-		NewWAN(caller),
-		NewWLAN(caller, DefaultWLANInterfaces),
+func tr064Exporter(caller Caller) *Exporter {
+	return newExporter([]enabledCollector{
+		{name: "device", scraper: newDevice(caller)},
+		{name: "wan", scraper: newWAN(caller)},
+		{name: "wlan", scraper: newWLAN(caller, wlanInterfaces)},
 	}, 5*time.Second, slog.New(slog.DiscardHandler))
 }
 
 func TestDeviceMetrics(t *testing.T) {
-	e := newExporter(fakeCaller{responses: spikeResponses()})
+	e := tr064Exporter(fakeCaller{responses: spikeResponses()})
 
 	want := `
 # HELP fritzbox_info Model and firmware of the FRITZ!Box. Always 1.
@@ -110,7 +110,7 @@ fritzbox_uptime_seconds 2518554
 }
 
 func TestWANMetrics(t *testing.T) {
-	e := newExporter(fakeCaller{responses: spikeResponses()})
+	e := tr064Exporter(fakeCaller{responses: spikeResponses()})
 
 	want := `
 # HELP fritzbox_wan_info WAN access type, e.g. Ethernet or X_AVM-DE_Cable. Always 1.
@@ -150,7 +150,7 @@ fritzbox_wan_connection_uptime_seconds 2518602
 }
 
 func TestWLANMetrics(t *testing.T) {
-	e := newExporter(fakeCaller{responses: spikeResponses()})
+	e := tr064Exporter(fakeCaller{responses: spikeResponses()})
 
 	want := `
 # HELP fritzbox_wlan_associations Number of clients connected to the WLAN interface.
@@ -176,7 +176,7 @@ fritzbox_wlan_info{band="unknown",channel="1",index="3",ssid="guest",standard=""
 }
 
 func TestScrapeStatusAllSucceed(t *testing.T) {
-	e := newExporter(fakeCaller{responses: spikeResponses()})
+	e := tr064Exporter(fakeCaller{responses: spikeResponses()})
 
 	want := `
 # HELP fritzbox_up Whether the FRITZ!Box could be reached (1 if at least one collector succeeded).
@@ -195,7 +195,7 @@ fritzbox_scrape_collector_success{collector="wlan"} 1
 }
 
 func TestScrapeStatusOneFails(t *testing.T) {
-	e := newExporter(fakeCaller{
+	e := tr064Exporter(fakeCaller{
 		responses: spikeResponses(),
 		errs: map[string]error{
 			key(tr064.WANIPConnection, "GetStatusInfo"): errors.New("boom"),
@@ -225,7 +225,7 @@ fritzbox_scrape_collector_success{collector="wlan"} 1
 
 func TestScrapeStatusBoxDown(t *testing.T) {
 	// No responses at all: every call fails, like an unreachable box.
-	e := newExporter(fakeCaller{})
+	e := tr064Exporter(fakeCaller{})
 
 	want := `
 # HELP fritzbox_up Whether the FRITZ!Box could be reached (1 if at least one collector succeeded).
@@ -241,7 +241,7 @@ fritzbox_up 0
 // the registry checks on every scrape (e.g. no duplicate or undeclared metrics).
 func TestRegistryAcceptsExporter(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(newExporter(fakeCaller{responses: spikeResponses()}))
+	reg.MustRegister(tr064Exporter(fakeCaller{responses: spikeResponses()}))
 
 	if _, err := reg.Gather(); err != nil {
 		t.Fatal(err)
@@ -260,7 +260,7 @@ func TestBandLabel(t *testing.T) {
 
 func TestWANPartialResults(t *testing.T) {
 	// The first WAN call fails, the other parts must still be collected.
-	e := newExporter(fakeCaller{
+	e := tr064Exporter(fakeCaller{
 		responses: spikeResponses(),
 		errs: map[string]error{
 			key(tr064.WANCommonInterfaceConfig, "GetCommonLinkProperties"): errors.New("boom"),
@@ -284,7 +284,7 @@ func TestWANPartialResults(t *testing.T) {
 
 func TestWLANPartialResults(t *testing.T) {
 	// Interface 1 fails, interfaces 2 and 3 must still be collected.
-	e := newExporter(fakeCaller{
+	e := tr064Exporter(fakeCaller{
 		responses: spikeResponses(),
 		errs: map[string]error{
 			key(tr064.WLANConfiguration(1), "GetInfo"): errors.New("boom"),
@@ -311,7 +311,7 @@ fritzbox_scrape_collector_success{collector="wlan"} 0
 func TestAuthErrorPausesCollector(t *testing.T) {
 	var calls atomic.Int32
 	caller := fakeCaller{errAll: fmt.Errorf("tr064 GetInfo: %w", tr064.ErrUnauthorized), calls: &calls}
-	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, slog.New(slog.DiscardHandler))
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
 
 	now := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)
 	e.now = func() time.Time { return now }
@@ -337,7 +337,7 @@ func TestAuthErrorPausesCollector(t *testing.T) {
 func TestNonAuthErrorDoesNotPause(t *testing.T) {
 	var calls atomic.Int32
 	caller := fakeCaller{errAll: errors.New("connection refused"), calls: &calls}
-	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, slog.New(slog.DiscardHandler))
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, slog.New(slog.DiscardHandler))
 
 	testutil.CollectAndCount(e)
 	testutil.CollectAndCount(e)
@@ -351,7 +351,7 @@ func TestLogsOnlyStateChanges(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	caller := &switchableCaller{fail: true}
-	e := NewExporter([]Scraper{NewDevice(caller)}, time.Second, logger)
+	e := newExporter([]enabledCollector{{name: "device", scraper: newDevice(caller)}}, time.Second, logger)
 
 	for range 3 {
 		testutil.CollectAndCount(e)

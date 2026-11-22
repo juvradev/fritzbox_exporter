@@ -1,8 +1,8 @@
 // Package collector turns FRITZ!Box data into Prometheus metrics.
 //
 // The Exporter is the single prometheus.Collector registered in main.go.
-// On every scrape it runs all enabled Scrapers (device, wan, wlan, ...)
-// in parallel and adds metrics about the scrape itself.
+// On every scrape it runs all enabled Collectors in parallel and adds
+// metrics about the scrape itself. New builds it from Collector names.
 package collector
 
 import (
@@ -35,21 +35,30 @@ type Caller interface {
 	Call(ctx context.Context, svc tr064.Service, action string, args map[string]string) (map[string]string, error)
 }
 
-// Scraper collects one group of metrics, e.g. everything about the WAN link.
+// Scraper is one Collector: it collects one group of metrics, e.g.
+// everything about the WAN link. The interface is not called Collector
+// because the Exporter already takes the prometheus.Collector role.
 type Scraper interface {
-	// Name is used in the "collector" label and in log messages.
-	Name() string
-	// Describe sends the descriptors of all metrics the scraper can emit.
+	// Describe sends the descriptors of all metrics the Collector can emit.
 	Describe(ch chan<- *prometheus.Desc)
 	// Scrape queries the box and sends the metrics. Metrics sent before an
 	// error are kept, so a partial result is still visible.
 	Scrape(ctx context.Context, ch chan<- prometheus.Metric) error
 }
 
-// Exporter runs all scrapers on every Prometheus scrape.
+// enabledCollector is a Collector the Exporter runs, together with its name,
+// which is used in the "collector" label and in log messages, and the
+// outcome of its previous scrape. The zero state is ready to use.
+type enabledCollector struct {
+	name    string
+	scraper Scraper
+	state   collectorState
+}
+
+// Exporter runs all Collectors on every Prometheus scrape.
 type Exporter struct {
-	scrapers    []Scraper
-	states      []*scraperState // one per scraper, same order
+	// Each entry holds a mutex, so entries are used by index, never copied.
+	collectors  []enabledCollector
 	timeout     time.Duration
 	authBackoff time.Duration
 	now         func() time.Time // replaceable in tests
@@ -60,25 +69,20 @@ type Exporter struct {
 	scrapeDuration *prometheus.Desc
 }
 
-// scraperState remembers the outcome of the previous scrape, so failures are
-// logged once when they start (not on every scrape) and authentication
-// errors can pause the scraper. Parallel /metrics requests share it.
-type scraperState struct {
+// collectorState remembers the outcome of the previous scrape, so failures
+// are logged once when they start (not on every scrape) and authentication
+// errors can pause the Collector. Parallel /metrics requests share it.
+type collectorState struct {
 	mu          sync.Mutex
 	failing     bool
 	pausedUntil time.Time
 }
 
-// NewExporter creates an Exporter. timeout limits one complete scrape.
-func NewExporter(scrapers []Scraper, timeout time.Duration, logger *slog.Logger) *Exporter {
-	states := make([]*scraperState, len(scrapers))
-	for i := range states {
-		states[i] = &scraperState{}
-	}
-
+// newExporter creates an Exporter that runs the given Collectors in order.
+// It takes ownership of the slice. timeout limits one complete scrape.
+func newExporter(collectors []enabledCollector, timeout time.Duration, logger *slog.Logger) *Exporter {
 	return &Exporter{
-		scrapers:    scrapers,
-		states:      states,
+		collectors:  collectors,
 		timeout:     timeout,
 		authBackoff: DefaultAuthBackoff,
 		now:         time.Now,
@@ -106,8 +110,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.up
 	ch <- e.scrapeSuccess
 	ch <- e.scrapeDuration
-	for _, s := range e.scrapers {
-		s.Describe(ch)
+	for i := range e.collectors {
+		e.collectors[i].scraper.Describe(ch)
 	}
 }
 
@@ -121,16 +125,17 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		wg       sync.WaitGroup
 		anyAlive atomic.Bool
 	)
-	for i, s := range e.scrapers {
-		// The scrapers are independent, so they run in parallel; the scrape
+	for i := range e.collectors {
+		c := &e.collectors[i]
+		// The Collectors are independent, so they run in parallel; the scrape
 		// takes as long as the slowest one instead of the sum of all.
 		wg.Go(func() {
-			ok, duration := e.runScraper(ctx, s, e.states[i], ch)
+			ok, duration := e.runCollector(ctx, c, ch)
 			if ok {
 				anyAlive.Store(true)
 			}
-			ch <- prometheus.MustNewConstMetric(e.scrapeSuccess, prometheus.GaugeValue, boolToFloat(ok), s.Name())
-			ch <- prometheus.MustNewConstMetric(e.scrapeDuration, prometheus.GaugeValue, duration, s.Name())
+			ch <- prometheus.MustNewConstMetric(e.scrapeSuccess, prometheus.GaugeValue, boolToFloat(ok), c.name)
+			ch <- prometheus.MustNewConstMetric(e.scrapeDuration, prometheus.GaugeValue, duration, c.name)
 		})
 	}
 	wg.Wait()
@@ -138,31 +143,33 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(e.up, prometheus.GaugeValue, boolToFloat(anyAlive.Load()))
 }
 
-// runScraper runs one scraper unless it is paused, and records the outcome.
-// It returns whether the scraper succeeded and how long it took in seconds.
-func (e *Exporter) runScraper(ctx context.Context, s Scraper, st *scraperState, ch chan<- prometheus.Metric) (bool, float64) {
+// runCollector runs one Collector unless it is paused, and records the
+// outcome. It returns whether the Collector succeeded and how long it took
+// in seconds.
+func (e *Exporter) runCollector(ctx context.Context, c *enabledCollector, ch chan<- prometheus.Metric) (bool, float64) {
+	st := &c.state
 	st.mu.Lock()
 	pausedUntil := st.pausedUntil
 	st.mu.Unlock()
 
 	if now := e.now(); now.Before(pausedUntil) {
 		e.logger.Debug("collector paused after authentication error",
-			"collector", s.Name(), "remaining", pausedUntil.Sub(now).Round(time.Second).String())
+			"collector", c.name, "remaining", pausedUntil.Sub(now).Round(time.Second).String())
 		return false, 0
 	}
 
 	start := time.Now()
-	err := s.Scrape(ctx, ch)
+	err := c.scraper.Scrape(ctx, ch)
 	duration := time.Since(start).Seconds()
 
-	e.record(s.Name(), st, err, duration)
+	e.record(c.name, st, err, duration)
 	return err == nil, duration
 }
 
-// record updates the scraper state and logs only on changes: the first
+// record updates the Collector state and logs only on changes: the first
 // failure, a recovery, or a new pause. Repeated identical failures are
 // logged at debug level, so an unreachable box does not flood the logs.
-func (e *Exporter) record(name string, st *scraperState, err error, duration float64) {
+func (e *Exporter) record(name string, st *collectorState, err error, duration float64) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -190,7 +197,7 @@ func (e *Exporter) record(name string, st *scraperState, err error, duration flo
 	st.failing = true
 }
 
-// pauseFor returns how long a scraper should pause after err, or 0 if it
+// pauseFor returns how long a Collector should pause after err, or 0 if it
 // should simply try again on the next scrape.
 func (e *Exporter) pauseFor(err error) time.Duration {
 	var blocked *webui.BlockedError
