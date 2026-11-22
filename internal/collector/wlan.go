@@ -12,9 +12,9 @@ import (
 	"github.com/juvradev/fritzbox_exporter/internal/tr064"
 )
 
-// DefaultWLANInterfaces is the number of WLANConfiguration services on a
+// wlanInterfaces is the number of WLANConfiguration services on a
 // dual-band box like the 6660: 2.4 GHz, 5 GHz and guest.
-const DefaultWLANInterfaces = 3
+const wlanInterfaces = 3
 
 // WLAN collects state and client counts of every WLAN interface
 // (WLANConfiguration:1..n services).
@@ -27,8 +27,8 @@ type WLAN struct {
 	associations *prometheus.Desc
 }
 
-// NewWLAN creates the "wlan" scraper for the given number of interfaces.
-func NewWLAN(caller Caller, interfaces int) *WLAN {
+// newWLAN creates the WLAN Collector for the given number of interfaces.
+func newWLAN(caller Caller, interfaces int) *WLAN {
 	labels := []string{"index", "band"}
 	return &WLAN{
 		caller:     caller,
@@ -52,9 +52,6 @@ func NewWLAN(caller Caller, interfaces int) *WLAN {
 		),
 	}
 }
-
-// Name implements Scraper.
-func (w *WLAN) Name() string { return "wlan" }
 
 // Describe implements Scraper.
 func (w *WLAN) Describe(ch chan<- *prometheus.Desc) {

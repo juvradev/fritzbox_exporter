@@ -32,8 +32,8 @@ type DOCSIS struct {
 	uncorrectedErrs *prometheus.Desc
 }
 
-// NewDOCSIS creates the "docsis" scraper.
-func NewDOCSIS(fetcher PageFetcher) *DOCSIS {
+// newDOCSIS creates the DOCSIS Collector.
+func newDOCSIS(fetcher PageFetcher) *DOCSIS {
 	channel := []string{"direction", "docsis", "channel"}
 	downstream := []string{"docsis", "channel"}
 	return &DOCSIS{
@@ -70,9 +70,6 @@ func NewDOCSIS(fetcher PageFetcher) *DOCSIS {
 		),
 	}
 }
-
-// Name implements Scraper.
-func (d *DOCSIS) Name() string { return "docsis" }
 
 // Describe implements Scraper.
 func (d *DOCSIS) Describe(ch chan<- *prometheus.Desc) {

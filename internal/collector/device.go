@@ -15,8 +15,8 @@ type Device struct {
 	uptime *prometheus.Desc
 }
 
-// NewDevice creates the "device" scraper.
-func NewDevice(caller Caller) *Device {
+// newDevice creates the Collector for general box information.
+func newDevice(caller Caller) *Device {
 	return &Device{
 		caller: caller,
 		info: prometheus.NewDesc(
@@ -31,9 +31,6 @@ func NewDevice(caller Caller) *Device {
 		),
 	}
 }
-
-// Name implements Scraper.
-func (d *Device) Name() string { return "device" }
 
 // Describe implements Scraper.
 func (d *Device) Describe(ch chan<- *prometheus.Desc) {

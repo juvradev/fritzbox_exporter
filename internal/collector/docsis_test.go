@@ -32,7 +32,7 @@ func docsisExporter(t *testing.T, fixture string) *Exporter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewExporter([]Scraper{NewDOCSIS(fakeFetcher{body: body})}, 5*time.Second, slog.New(slog.DiscardHandler))
+	return newExporter([]namedScraper{{"docsis", newDOCSIS(fakeFetcher{body: body})}}, 5*time.Second, slog.New(slog.DiscardHandler))
 }
 
 func TestDOCSISUnavailable(t *testing.T) {
@@ -106,7 +106,7 @@ fritzbox_docsis_channel_info{channel="9",direction="upstream",docsis="3.1",frequ
 func TestDOCSISSkipsDuplicateChannels(t *testing.T) {
 	body := []byte(`{"pid":"docInfo","data":{"channelDs":{"docsis30":[
 		{"channelID":1,"powerLevel":"5"},{"channelID":1,"powerLevel":"6"}]}}}`)
-	e := NewExporter([]Scraper{NewDOCSIS(fakeFetcher{body: body})}, time.Second, slog.New(slog.DiscardHandler))
+	e := newExporter([]namedScraper{{"docsis", newDOCSIS(fakeFetcher{body: body})}}, time.Second, slog.New(slog.DiscardHandler))
 
 	// A duplicate label set would make the registry reject the whole scrape.
 	reg := prometheus.NewPedanticRegistry()
@@ -117,7 +117,7 @@ func TestDOCSISSkipsDuplicateChannels(t *testing.T) {
 }
 
 func TestDOCSISFetchError(t *testing.T) {
-	e := NewExporter([]Scraper{NewDOCSIS(fakeFetcher{err: errors.New("login failed")})},
+	e := newExporter([]namedScraper{{"docsis", newDOCSIS(fakeFetcher{err: errors.New("login failed")})}},
 		time.Second, slog.New(slog.DiscardHandler))
 
 	want := `

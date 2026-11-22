@@ -23,8 +23,8 @@ type WAN struct {
 	connectionUptime *prometheus.Desc
 }
 
-// NewWAN creates the "wan" scraper.
-func NewWAN(caller Caller) *WAN {
+// newWAN creates the WAN Collector.
+func newWAN(caller Caller) *WAN {
 	return &WAN{
 		caller: caller,
 		info: prometheus.NewDesc(
@@ -64,9 +64,6 @@ func NewWAN(caller Caller) *WAN {
 		),
 	}
 }
-
-// Name implements Scraper.
-func (w *WAN) Name() string { return "wan" }
 
 // Describe implements Scraper.
 func (w *WAN) Describe(ch chan<- *prometheus.Desc) {
