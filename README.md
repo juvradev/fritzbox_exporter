@@ -87,7 +87,7 @@ All settings are environment variables.
 | `FRITZBOX_PASSWORD`   | ✅       | –                          | Password of that user |
 | `FRITZBOX_URL`        |          | `http://fritz.box:49000`   | TR-064 URL of the box (`http` only, see below). Use the IP inside containers/Kubernetes, `fritz.box` is usually not resolvable there |
 | `FRITZBOX_WEBUI_URL`  |          | derived from `FRITZBOX_URL` (same host, no port) | Web UI URL, only used by the `docsis` collector |
-| `FRITZBOX_COLLECTORS` |          | `device,wan,wlan,docsis`   | Comma-separated list of enabled collectors |
+| `FRITZBOX_COLLECTORS` |          | all collectors             | Comma-separated list of enabled collectors |
 | `LISTEN_ADDRESS`      |          | `:9133`                    | Address of the HTTP server |
 | `LOG_LEVEL`           |          | `info`                     | `debug`, `info`, `warn` or `error` |
 | `SCRAPE_TIMEOUT`      |          | `10s`                      | Max. duration of one scrape. Keep it below Prometheus' `scrape_timeout` (default 10s), e.g. `8s` |

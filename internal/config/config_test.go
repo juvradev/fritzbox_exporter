@@ -41,8 +41,22 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WebUIURL != "http://fritz.box" {
 		t.Errorf("WebUIURL = %q, want http://fritz.box (derived from FRITZBOX_URL)", cfg.WebUIURL)
 	}
-	if want := []string{"device", "wan", "wlan", "docsis"}; !slices.Equal(cfg.Collectors, want) {
-		t.Errorf("Collectors = %v, want %v", cfg.Collectors, want)
+	if cfg.Collectors != nil {
+		t.Errorf("Collectors = %v, want nil (all Collectors)", cfg.Collectors)
+	}
+}
+
+func TestLoadBlankCollectorsMeansAll(t *testing.T) {
+	cfg, err := load(env(map[string]string{
+		EnvFritzBoxUsername: "prometheus",
+		EnvFritzBoxPassword: "secret",
+		EnvCollectors:       "  ",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Collectors != nil {
+		t.Errorf("Collectors = %v, want nil (all Collectors)", cfg.Collectors)
 	}
 }
 
@@ -81,9 +95,6 @@ func TestLoadCustomValues(t *testing.T) {
 	if cfg.ScrapeTimeout != 3*time.Second {
 		t.Errorf("ScrapeTimeout = %v, want 3s", cfg.ScrapeTimeout)
 	}
-	if !cfg.CollectorEnabled("docsis") || cfg.CollectorEnabled("wlan") {
-		t.Errorf("CollectorEnabled() does not match %v", cfg.Collectors)
-	}
 }
 
 func TestLoadErrors(t *testing.T) {
@@ -107,9 +118,9 @@ func TestLoadErrors(t *testing.T) {
 		{"bad log level", EnvLogLevel, "loud", "LOG_LEVEL"},
 		{"bad timeout", EnvScrapeTimeout, "ten", "SCRAPE_TIMEOUT"},
 		{"zero timeout", EnvScrapeTimeout, "0s", "must be positive"},
-		{"unknown collector", EnvCollectors, "wan,dect", `unknown collector "dect"`},
 		{"duplicate collector", EnvCollectors, "wan,wan", "listed twice"},
-		{"no collector", EnvCollectors, " , ", "at least one collector"},
+		{"no collector", EnvCollectors, ",", "at least one collector"},
+		{"no collector with spaces", EnvCollectors, " , ", "at least one collector"},
 		{"bad web ui url", EnvWebUIURL, "fritz.box", "FRITZBOX_WEBUI_URL"},
 	}
 

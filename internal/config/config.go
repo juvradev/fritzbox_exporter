@@ -31,21 +31,17 @@ const (
 // Defaults for optional settings.
 const (
 	DefaultFritzBoxURL   = "http://fritz.box:49000"
-	DefaultCollectors    = "device,wan,wlan,docsis"
 	DefaultListenAddress = ":9133"
 	DefaultLogLevel      = "info"
 	DefaultScrapeTimeout = 10 * time.Second
 )
-
-// KnownCollectors lists every collector name accepted in FRITZBOX_COLLECTORS.
-var KnownCollectors = []string{"device", "wan", "wlan", "docsis"}
 
 // Config is the complete exporter configuration.
 type Config struct {
 	FritzBoxURL   string        // TR-064 base URL, e.g. http://10.10.0.1:49000
 	Username      string        // FRITZ!Box user with the "FRITZ!Box settings" right
 	Password      string        // never log this; see LogValue
-	Collectors    []string      // enabled collectors, e.g. ["device", "wan"]
+	Collectors    []string      // enabled Collectors, e.g. ["device", "wan"]; nil means all
 	ListenAddress string        // address for the HTTP server, e.g. ":9133"
 	LogLevel      slog.Level    // minimum level for log output
 	ScrapeTimeout time.Duration // upper bound for one call to the box
@@ -117,21 +113,20 @@ func load(lookup lookupFunc) (Config, error) {
 		cfg.ScrapeTimeout = timeout
 	}
 
-	collectors, err := parseCollectors(get(EnvCollectors, DefaultCollectors))
-	if err != nil {
-		errs = append(errs, fmt.Errorf("%s: %w", EnvCollectors, err))
+	// Unset or blank leaves the list nil, which enables every Collector.
+	// The names themselves are checked by the collector module.
+	if raw := get(EnvCollectors, ""); raw != "" {
+		collectors, err := parseCollectors(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvCollectors, err))
+		}
+		cfg.Collectors = collectors
 	}
-	cfg.Collectors = collectors
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
 	}
 	return cfg, nil
-}
-
-// CollectorEnabled reports whether the named collector is switched on.
-func (c Config) CollectorEnabled(name string) bool {
-	return slices.Contains(c.Collectors, name)
 }
 
 // LogValue implements slog.LogValuer. It controls how the config appears in
@@ -185,8 +180,9 @@ func webUIFromTR064(raw string) string {
 	return (&url.URL{Scheme: u.Scheme, Host: host}).String()
 }
 
-// parseCollectors turns "wan, wlan" into ["wan", "wlan"] and rejects
-// unknown or duplicate names.
+// parseCollectors turns "WAN, wlan" into ["wan", "wlan"] and rejects
+// duplicate names and a list without any name. It does not know which
+// Collectors exist; the collector module rejects unknown names.
 func parseCollectors(raw string) ([]string, error) {
 	var names []string
 	for name := range strings.SplitSeq(raw, ",") {
@@ -194,8 +190,6 @@ func parseCollectors(raw string) ([]string, error) {
 		switch {
 		case name == "":
 			continue
-		case !slices.Contains(KnownCollectors, name):
-			return nil, fmt.Errorf("unknown collector %q (known: %s)", name, strings.Join(KnownCollectors, ", "))
 		case slices.Contains(names, name):
 			return nil, fmt.Errorf("collector %q listed twice", name)
 		}

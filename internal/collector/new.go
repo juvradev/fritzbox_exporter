@@ -11,7 +11,8 @@ import (
 // Options configure New.
 type Options struct {
 	// Collectors are the names of the enabled Collectors, in the order
-	// they run.
+	// they run. A nil list enables every known Collector in the built-in
+	// order.
 	Collectors []string
 	// TR064 is the client for the TR-064 API.
 	TR064 Caller
@@ -41,7 +42,8 @@ type knownCollector struct {
 }
 
 // knownCollectors is the only place a Collector name is written. It is
-// ordered so that error messages list the names in a stable order.
+// ordered so that the default order and the names listed in error messages
+// stay stable.
 var knownCollectors = []knownCollector{
 	{name: "device", needs: tr064Client, build: func(o Options) Scraper { return newDevice(o.TR064) }},
 	{name: "wan", needs: tr064Client, build: func(o Options) Scraper { return newWAN(o.TR064) }},
@@ -50,8 +52,8 @@ var knownCollectors = []knownCollector{
 	{name: "docsis", needs: webUIClient, build: func(o Options) Scraper { return newDOCSIS(o.WebUI) }},
 }
 
-// New builds an Exporter that runs the Collectors named in o.Collectors.
-// It checks every name and the client each Collector needs, and returns one
+// New builds an Exporter that runs the Collectors named in o.Collectors,
+// or every known Collector if o.Collectors is nil. It checks every name and the client each Collector needs, and returns one
 // error describing all problems. A client no enabled Collector needs may be
 // nil.
 func New(o Options) (*Exporter, error) {
@@ -59,7 +61,11 @@ func New(o Options) (*Exporter, error) {
 		collectors []namedScraper
 		errs       []error
 	)
-	for _, name := range o.Collectors {
+	names := o.Collectors
+	if names == nil {
+		names = knownNames()
+	}
+	for _, name := range names {
 		known, ok := lookupCollector(name)
 		if !ok {
 			errs = append(errs, fmt.Errorf("unknown collector %q (known: %s)", name, strings.Join(knownNames(), ", ")))
@@ -75,11 +81,11 @@ func New(o Options) (*Exporter, error) {
 		return nil, fmt.Errorf("invalid collectors: %w", errors.Join(errs...))
 	}
 
-	names := make([]string, len(collectors))
+	enabled := make([]string, len(collectors))
 	for i, c := range collectors {
-		names[i] = c.name
+		enabled[i] = c.name
 	}
-	o.Logger.Info("collectors enabled", "collectors", names)
+	o.Logger.Info("collectors enabled", "collectors", enabled)
 
 	return newExporter(collectors, o.ScrapeTimeout, o.Logger), nil
 }

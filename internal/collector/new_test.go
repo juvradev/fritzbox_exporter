@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -50,6 +51,38 @@ fritzbox_scrape_collector_success{collector="wlan"} 1
 `
 	if err := testutil.CollectAndCompare(e, strings.NewReader(want), "fritzbox_scrape_collector_success"); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestNewWithoutListEnablesEveryCollector(t *testing.T) {
+	body, err := os.ReadFile("testdata/docinfo_unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	o := newOptions() // nil list
+	o.WebUI = fakeFetcher{body: body}
+	o.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	e, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `
+# HELP fritzbox_scrape_collector_success Whether the collector succeeded during the last scrape.
+# TYPE fritzbox_scrape_collector_success gauge
+fritzbox_scrape_collector_success{collector="device"} 1
+fritzbox_scrape_collector_success{collector="docsis"} 1
+fritzbox_scrape_collector_success{collector="wan"} 1
+fritzbox_scrape_collector_success{collector="wlan"} 1
+`
+	if err := testutil.CollectAndCompare(e, strings.NewReader(want), "fritzbox_scrape_collector_success"); err != nil {
+		t.Error(err)
+	}
+	// The metric output is sorted, so the order is checked in the log.
+	if want := `collectors="[device wan wlan docsis]"`; !strings.Contains(buf.String(), want) {
+		t.Errorf("log %q does not contain %q", buf.String(), want)
 	}
 }
 
